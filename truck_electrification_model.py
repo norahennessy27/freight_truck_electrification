@@ -207,7 +207,7 @@ FAF_db22_t.loc[FAF_db22_t.TERRAIN == 3,"TIME_UPHILL"] = 0.5
 
 ## Load electricity data
 BAs = gpd.read_file("Control_Areas.shp")
-BA_codes = pd.read_csv("ba_tz.csv")
+BA_codes = pd.read_csv("ba_names.csv")
 BA_codes["NAME"]=BA_codes["BANAME"].str.upper()
 BAs=BAs.merge(BA_codes,how="left",left_on="NAME",right_on = "NAME")
 
