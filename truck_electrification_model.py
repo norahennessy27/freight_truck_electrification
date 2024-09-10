@@ -1,4 +1,7 @@
 ## Import libraries
+from __future__ import (absolute_import, division,
+                        print_function, unicode_literals)
+from builtins import *
 import pandas as pd
 import numpy as np
 import geopandas as gpd
@@ -12,14 +15,11 @@ from numpy.random import choice
 import seaborn as sns
 
 
-from __future__ import (absolute_import, division,
-                        print_function, unicode_literals)
+
 from builtins import *
 
 import warnings
 warnings.filterwarnings("ignore",category = FutureWarning)
-%load_ext autoreload
-%autoreload 2
 
 from io import BytesIO, TextIOWrapper
 from zipfile import ZipFile
@@ -34,9 +34,7 @@ import matplotlib.pyplot as plt
 
 
 # Ensure compatibility between python 2 and python 3
-from __future__ import (absolute_import, division,
-                        print_function, unicode_literals)
-from builtins import *
+
 
 import requests
 import platform
@@ -297,13 +295,22 @@ demographics.loc[demographics.DIVISION=='9',"Big Region"] = "West"
 ############### DEFINE FUNCTIONS ###############################
 
 def vehicle_weight(df, trucks, vehicle, year, commflow, truckflow):
-    df[f"lbs_freight_per_truck_{year}"] = df[commflow]*1e3/df[truckflow]/365*2000 #lbs/truck
-    df[f"tot_wt_{vehicle}"] = df[f"lbs_freight_per_truck_{year}"]+trucks.loc["base_weight",vehicle]
-    
-    df.loc[df[f"tot_wt_{vehicle}"] > 80000,truckflow] = np.ceil(df.loc[df[f"tot_wt_{vehicle}"]>80000,commflow]*1e3*2000/365/(80000-trucks.loc["base_weight",vehicle]))
-    #recalculate truck weights
-    df[f"lbs_freight_per_truck_{year}"] = df[commflow]*1e3/df[truckflow]/365*2000 #lbs/truck
-    df[f"tot_wt_{vehicle}"] = df[f"lbs_freight_per_truck_{year}"]+trucks.loc["base_weight",vehicle]
+    if vehicle == "Diesel":    
+        df[f"lbs_freight_per_truck_{year}"] = df[commflow]*1e3/df[truckflow]/365*2000 #lbs/truck
+        df[f"tot_wt_{vehicle}"] = df[f"lbs_freight_per_truck_{year}"]+trucks.loc["base_weight",vehicle]
+
+        df.loc[df[f"tot_wt_{vehicle}"] > 80000,truckflow] = np.ceil(df.loc[df[f"tot_wt_{vehicle}"]>80000,commflow]*1e3*2000/365/(80000-trucks.loc["base_weight",vehicle]))
+        #recalculate truck weights
+        df[f"lbs_freight_per_truck_{year}"] = df[commflow]*1e3/df[truckflow]/365*2000 #lbs/truck
+        df[f"tot_wt_{vehicle}"] = df[f"lbs_freight_per_truck_{year}"]+trucks.loc["base_weight",vehicle]
+    elif vehicle == "Electric":
+        df[f"lbs_freight_per_truck_{year}"] = df[commflow]*1e3/df[truckflow]/365*2000 #lbs/truck
+        df[f"tot_wt_{vehicle}"] = df[f"lbs_freight_per_truck_{year}"]+trucks.loc["base_weight",vehicle]
+
+        df.loc[df[f"tot_wt_{vehicle}"] > 82000,truckflow] = np.ceil(df.loc[df[f"tot_wt_{vehicle}"]>82000,commflow]*1e3*2000/365/(82000-trucks.loc["base_weight",vehicle]))
+        #recalculate truck weights
+        df[f"lbs_freight_per_truck_{year}"] = df[commflow]*1e3/df[truckflow]/365*2000 #lbs/truck
+        df[f"tot_wt_{vehicle}"] = df[f"lbs_freight_per_truck_{year}"]+trucks.loc["base_weight",vehicle]
 
 def truck_energy_consumption(df, trucks, vehicle,year, truckflow):
     #print(f"year = {year}")
@@ -415,9 +422,13 @@ def diesel_co2(df, diesel_efs):
     df_ap["CO2"] = diesel_efs["co2"].item()*df_ap["total_gal_Diesel_year"]/1000   
     return df_ap
 
-def commodity_emissions_diesel(faf_df,trucks, vehicle, year, commflow, truckflow,var, efs):
+def commodity_emissions_diesel(faf_df,trucks, vehicle, year, commflow, truckflow,var, efs, weight_flag):
     df = faf_df.copy()
-    vehicle_weight(df, trucks, vehicle, year, commflow, truckflow)
+    if weight_flag == True:
+        vehicle_weight(df, trucks, vehicle, year, commflow, truckflow)
+    else:
+        df[f"lbs_freight_per_truck_{year}"] = df[commflow]*1e3/df[truckflow]/365*2000 #lbs/truck
+        df[f"tot_wt_{vehicle}"] = df[f"lbs_freight_per_truck_{year}"]+trucks.loc["base_weight",vehicle]
     truck_energy_consumption(df, trucks, vehicle,year, truckflow)
     #print(df.kwh_Diesel_2017.sum())
     diesel_efs = get_diesel_efs(5,efs) #13479000
@@ -428,16 +439,59 @@ def commodity_emissions_diesel(faf_df,trucks, vehicle, year, commflow, truckflow
     diesel_ap = diesel_ap.reset_index().drop(columns = "index").to_crs(4326)
     return diesel_ap, co2
 
-def get_ba_electricity(df, BAs, trucks,vehicle, year, commflow, truckflow, var):
-    vehicle_weight(df, trucks, vehicle, year, commflow, truckflow)
+## Build look-up table for BAs:
+faf_ba_lookup = FAF_db22_t[["ID","OBJECTID","geometry"]].sjoin(BAs.to_crs(FAF_db22_t.crs), predicate = "within")
+count_dups = faf_ba_lookup.groupby("OBJECTID_left").count()["ID_left"]
+
+faf_ba_lookup = faf_ba_lookup[["OBJECTID_left","BACODE","geometry"]].merge(
+    count_dups, how = "inner", left_on = "OBJECTID_left", right_on = "OBJECTID_left").rename(columns = {"ID_left":"n"})
+FAF_no_ba = FAF_db22_t.loc[~FAF_db22_t.OBJECTID.isin(faf_ba_lookup.OBJECTID_left),["ID","OBJECTID","geometry"]]
+FAF_no_ba = FAF_no_ba.to_crs(BAs.crs)
+FAF_no_ba["centroid"] = FAF_no_ba.geometry.centroid
+FAF_no_ba["geometry"] = FAF_no_ba["centroid"]
+BA_centroids = BAs.copy()
+BA_centroids["centroid"] = BA_centroids.geometry.centroid
+BA_centroids["geometry"] = BA_centroids["centroid"]
+FAF_no_ba_BAs= FAF_no_ba.to_crs(BA_centroids.crs).sjoin_nearest(
+    BA_centroids, how = "left", max_distance = None)[["OBJECTID_left","BACODE"]]
+FAF_no_ba_BAs["n"] = 1
+FAF_no_ba_BAs = FAF_no_ba_BAs.merge(FAF_db22_t[["OBJECTID", "geometry"]], how = "inner", left_on = "OBJECTID_left", right_on = "OBJECTID")
+faf_ba_lookup = faf_ba_lookup.append(FAF_no_ba_BAs[["OBJECTID_left","BACODE","geometry","n"]])
+
+## Build look-up table for states:
+states = gpd.read_file("tl_2019_us_state/tl_2019_us_state.shp")
+faf_state_lookup = FAF_db22_t[["ID","OBJECTID","geometry"]].sjoin(states.to_crs(FAF_db22_t.crs), predicate = "within")
+count_dups = faf_state_lookup.groupby("OBJECTID").count()["ID"]
+
+faf_state_lookup = faf_state_lookup[["OBJECTID","GEOID","geometry"]].merge(
+    count_dups, how = "inner", left_on = "OBJECTID", right_on = "OBJECTID").rename(columns = {"ID":"n"})
+FAF_no_state = FAF_db22_t.loc[~FAF_db22_t.OBJECTID.isin(faf_state_lookup.OBJECTID),["ID","OBJECTID","geometry"]]
+FAF_no_state = FAF_no_state.to_crs(states.crs)
+FAF_no_state["centroid"] = FAF_no_state.geometry.centroid
+FAF_no_state["geometry"] = FAF_no_state["centroid"]
+state_centroids = states.copy()
+state_centroids["centroid"] = state_centroids.geometry.centroid
+state_centroids["geometry"] = state_centroids["centroid"]
+FAF_no_state_states= FAF_no_state.to_crs(state_centroids.crs).sjoin_nearest(
+    state_centroids, how = "left", max_distance = None)[["OBJECTID","GEOID"]]
+FAF_no_state_states["n"] = 1
+FAF_no_state_states = FAF_no_state_states.merge(FAF_db22_t[["OBJECTID", "geometry"]], how = "inner", left_on = "OBJECTID", right_on = "OBJECTID")
+faf_state_lookup = faf_state_lookup.append(FAF_no_state_states[["OBJECTID","GEOID","geometry","n"]])
+
+
+
+def get_ba_electricity(df, BAs, trucks,vehicle, year, commflow, truckflow, var, weight_flag):
+    #calculate truck energy consumpgion
+    if weight_flag == True:
+        vehicle_weight(df, trucks, vehicle, year, commflow, truckflow)
+    else:
+        df[f"lbs_freight_per_truck_{year}"] = df[commflow]*1e3/df[truckflow]/365*2000 #lbs/truck
+        df[f"tot_wt_{vehicle}"] = df[f"lbs_freight_per_truck_{year}"]+trucks.loc["base_weight",vehicle]
     truck_energy_consumption(df, trucks, vehicle, year, truckflow)    
-    faf_ba = df.sjoin(BAs.to_crs(df.crs), predicate = "within")
-    #Account for overlapping BAs to avoid double counting electricity
-    count_dups = faf_ba.groupby("OBJECTID_left").count()["ID_left"]
-    for index, row in faf_ba.iterrows():
-        lookup = row["OBJECTID_left"]
-        n = count_dups[lookup]
-        faf_ba.loc[faf_ba.OBJECTID_left == lookup,var] = faf_ba.loc[faf_ba.OBJECTID_left == lookup,var]/n
+    
+    #assign BAs + account for duplicates
+    faf_ba = df.merge(faf_ba_lookup, how = "inner", left_on = "OBJECTID", right_on = "OBJECTID_left")
+    faf_ba[var] = faf_ba[var]/faf_ba["n"]
 
     ba_electricity = faf_ba.groupby("BACODE").agg({var:"sum"})
     #Reassign consumpgion in GRIS to PNM (closest BA)
@@ -445,6 +499,24 @@ def get_ba_electricity(df, BAs, trucks,vehicle, year, commflow, truckflow, var):
         ba_electricity.loc["PNM",var] += ba_electricity.loc["GRIS",var]
         ba_electricity = ba_electricity.drop("GRIS")
     return ba_electricity
+
+def get_state_electricity(df, BAs, trucks,vehicle, year, commflow, truckflow, var, weight_flag):
+    #calculate truck energy consumpgion
+    if weight_flag == True:
+        vehicle_weight(df, trucks, vehicle, year, commflow, truckflow)
+    else:
+        df[f"lbs_freight_per_truck_{year}"] = df[commflow]*1e3/df[truckflow]/365*2000 #lbs/truck
+        df[f"tot_wt_{vehicle}"] = df[f"lbs_freight_per_truck_{year}"]+trucks.loc["base_weight",vehicle]
+    truck_energy_consumption(df, trucks, vehicle, year, truckflow)    
+    
+    #assign BAs + account for duplicates
+    faf_state = df.merge(faf_state_lookup, how = "inner", left_on = "OBJECTID", right_on = "OBJECTID")
+    faf_state[var] = faf_state[var]/faf_state["n"]
+
+    state_electricity = faf_state.groupby("GEOID").agg({var:"sum"})
+
+    return state_electricity
+
 
 def get_elec_deaths_basic(df, ba_electricity, pm25_twh, var): #BA_deathsK_twh
     BA_deathsK = {}
@@ -486,9 +558,9 @@ def get_elec_co2(ba_electricity, co2_twh, var):
     total_co2 = ba_co2["co2"].sum()
     return total_co2
 
-def run_diesel_analysis(df1, trucks, vehicle, year,commflow, truckflow, var, efs, name ):
+def run_diesel_analysis(df1, trucks, vehicle, year,commflow, truckflow, var, efs, name, weight_flag ):
     df = df1.copy()
-    ap_test, diesel_co2 = commodity_emissions_diesel(df,trucks,vehicle, year, commflow, truckflow,var, efs)
+    ap_test, diesel_co2 = commodity_emissions_diesel(df,trucks,vehicle, year, commflow, truckflow,var, efs, weight_flag)
     ap_test["centroid"] = ap_test["geometry"].to_crs('+proj=cea').centroid.to_crs(4326)
     diesel_ef = create_emissions_file(ap_test)
     diesel_deaths = run_inmap(diesel_ef)
@@ -498,10 +570,10 @@ def run_diesel_analysis(df1, trucks, vehicle, year,commflow, truckflow, var, efs
         pickle.dump(diesel_co2, f)
     return diesel_deaths, diesel_co2
 
-def run_elec_analysis(df1, BAs, trucks,vehicle, year, commflow, truckflow, var, deaths_twh, name, co2_twh):
+def run_elec_analysis(df1, BAs, trucks,vehicle, year, commflow, truckflow, var, deaths_twh, name, co2_twh, weight_flag):
     df = df1.copy()
     #print(year)
-    ba_elec = get_ba_electricity(df1, BAs, trucks,vehicle, year, commflow, truckflow, var)
+    ba_elec = get_ba_electricity(df1, BAs, trucks,vehicle, year, commflow, truckflow, var, weight_flag)
     elec_deaths = get_elec_deaths_basic(df1, ba_elec, deaths_twh, var)
     elec_deaths["deathsK"] = elec_deaths["TotalDeathsK"]
     elec_co2 = get_elec_co2(ba_elec, co2_twh, var)
